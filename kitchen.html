@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>주방 합계 · 6메뉴 블록 · 실시간</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#0f172a; --ink:#e5e7eb; --muted:#cbd5e1;
+      --line:#2b3444; --flash:#ef4444;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Helvetica,Arial,sans-serif}
+    .wrap{min-height:100%;max-width:1400px;margin:0 auto;
+      padding:env(safe-area-inset-top,14px) 16px env(safe-area-inset-bottom,16px)}
+    header{display:flex;align-items:baseline;gap:12px;margin:0 0 10px}
+    h1{font-size:clamp(20px,3.6vh,40px);margin:0;font-weight:900}
+    .status{display:flex;gap:8px;align-items:center;margin-left:auto}
+    .chip{border:1px solid var(--line);color:#94a3b8;padding:6px 10px;border-radius:999px;
+      font-size:clamp(12px,2vh,16px); white-space:nowrap}
+    .chip.ok{border-color:#14532d;color:#bbf7d0;background:#052e16}
+    .chip.err{border-color:#7f1d1d;color:#fecaca;background:#450a0a}
+
+    /* 3x2 grid to fill iPad */
+    .cards{
+      display:grid;gap:14px;grid-template-columns:repeat(3,1fr);
+      grid-auto-rows:1fr;min-height:calc(100vh - 120px)
+    }
+    .card{
+      display:grid;grid-template-rows:auto 1fr;align-items:center;justify-items:center;
+      background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px 12px
+    }
+
+    /* === 가시성 강화: 메뉴 이름 크게(2줄 제한, 오버플로우 숨김) === */
+    .name{
+      /* ⬇️ 폰트 크기만 상향 (다른 스타일 그대로) */
+      font-size:clamp(28px, 6vh, 64px);
+      font-weight:1000;
+      color:var(--muted);
+      text-align:center;
+      line-height:1.15;
+      display:-webkit-box;             /* 두 줄까지만 */
+      -webkit-line-clamp:2;
+      -webkit-box-orient:vertical;
+      overflow:hidden;
+    }
+
+    /* === 숫자는 기존 그대로, 남는 공간 최대 활용 === */
+    .qty{
+      font-size:clamp(64px, 14vh, 180px);
+      font-weight:1000;
+      line-height:1;
+      font-variant-numeric:tabular-nums;
+      letter-spacing:0.5px;
+    }
+
+    .flash{animation:blink .35s ease}
+    @keyframes blink{0%{background:rgba(239,68,68,.35)}100%{background:transparent}}
+
+    @media (max-width:980px){
+      .wrap{max-width:100%;padding:8px}
+      .cards{gap:10px}
+      /* 작은 화면에서도 더 크게 보이게 유지 */
+      .name{font-size:clamp(24px, 5.2vh, 48px)}
+      .qty{font-size:clamp(56px, 15vh, 160px)}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>주방 합계</h1>
+      <div class="status">
+        <span id="conn" class="chip">연결 대기</span>
+        <span id="upd" class="chip">업데이트 없음</span>
+      </div>
+    </header>
+
+    <div id="cards" class="cards"></div>
+  </div>
+
+  <!-- Firebase v8 -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script>
+    var firebaseConfig = {
+      apiKey: "AIzaSyCWBPv3YgGKOH0b1e59I3QG9SfRtcNZSDY",
+      authDomain: "chookjae-8e133.firebaseapp.com",
+      projectId: "chookjae-8e133",
+      storageBucket: "chookjae-8e133.firebasestorage.app",
+      messagingSenderId: "82575498649",
+      appId: "1:82575498649:web:364e9c286a9f3ae7474708",
+      measurementId: "G-BQ95TPG37V",
+      databaseURL: "https://chookjae-8e133-default-rtdb.firebaseio.com"
+    };
+    var ROOM_ID = "CHOOKJAE";
+    var menus = ["우삼겹숙주볶음","치즈김치전","만두계란탕","불닭콘치즈","치즈콘계란말이","두부김치"]; // 음료 제외
+
+    var cardsEl = document.getElementById('cards');
+    function skeleton(){
+      cardsEl.innerHTML="";
+      menus.forEach(function(name){
+        var card=document.createElement('div'); card.className='card';
+        var n=document.createElement('div'); n.className='name'; n.textContent=name;
+        var q=document.createElement('div'); q.className='qty'; q.dataset.key=name; q.textContent='0';
+        card.appendChild(n); card.appendChild(q);
+        cardsEl.appendChild(card);
+      });
+    }
+    skeleton();
+
+    function fmt(ms){
+      if(!ms) return "업데이트 없음";
+      var d=new Date(ms); var z=n=>String(n).padStart(2,'0');
+      return "업데이트 "+z(d.getHours())+":"+z(d.getMinutes())+":"+z(d.getSeconds());
+    }
+    function flash(el){
+      var card = el.closest('.card');
+      card.classList.remove('flash'); card.offsetWidth; card.classList.add('flash');
+    }
+
+    try{
+      firebase.initializeApp(firebaseConfig);
+      var db=firebase.database();
+      document.getElementById('conn').textContent='연결 시도중…';
+      var ref = db.ref('orders/'+ROOM_ID+'/footerTotals');
+      ref.on('value', function(snap){
+        var v=snap.val()||{};
+        document.getElementById('conn').textContent='연결됨';
+        document.getElementById('conn').classList.add('ok');
+        menus.forEach(function(name){
+          var el=document.querySelector('[data-key="'+name+'"]');
+          if(!el) return;
+          var next = Number(v[name]||0);
+          var prev = Number(el.textContent||0);
+          if(prev !== next){ flash(el); }
+          el.textContent = String(next);
+        });
+        document.getElementById('upd').textContent = fmt(v.updatedAt);
+      }, function(){
+        var c=document.getElementById('conn'); c.textContent='연결 오류'; c.classList.add('err');
+      });
+    }catch(e){
+      var c=document.getElementById('conn'); c.textContent='초기화 실패'; c.classList.add('err');
+    }
+  </script>
+</body>
+</html>
